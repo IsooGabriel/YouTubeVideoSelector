@@ -1,0 +1,4 @@
+import {readText,writeText} from './file-system.js';
+const NAME='channel_labels.json';
+export async function loadLabels(handle){const text=await readText(handle,NAME,{required:false});if(text===null||!text.trim())return {};try{const v=JSON.parse(text);if(!v||Array.isArray(v)||typeof v!=='object')throw 0;return v;}catch{throw new Error('channel_labels.json が正しいJSONではありません。書き込みを中止しました。');}}
+export async function setLabel(handle, record, musicOnly){if(!record.channel_url)throw new Error('チャンネルURLがないため判定を保存できません。');const labels=await loadLabels(handle);if(musicOnly===null)delete labels[record.channel_url];else labels[record.channel_url]={channel:record.channel??'',channel_url:record.channel_url,music_only:musicOnly,updated_at:new Date().toISOString()};await writeText(handle,NAME,JSON.stringify(labels,null,2)+'\n');return labels;}

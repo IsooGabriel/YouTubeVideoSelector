@@ -1,0 +1,13 @@
+import {parseJsonl,serializeJsonl,fingerprint} from './jsonl-store.js';
+// FILES はフォルダ内で管理する全分類先、SOURCE_FILES は画面で確認する対象。
+export const FILES=['likely.jsonl','possible.jsonl','unknown.jsonl','excluded.jsonl'];
+export const SOURCE_FILES=['likely.jsonl','possible.jsonl'];
+export const supportsFileAccess=()=>typeof window.showDirectoryPicker==='function';
+export async function permission(handle, request=false) { const options={mode:'readwrite'}; if((await handle.queryPermission(options))==='granted') return true; return request && (await handle.requestPermission(options))==='granted'; }
+export async function readText(handle,name,{required=true}={}) { try { const f=await handle.getFileHandle(name); return await (await f.getFile()).text(); } catch(e) { if(e.name==='NotFoundError'&&!required) return null; throw e; } }
+export async function readJsonl(handle,name) { const text=await readText(handle,name); return {text,records:parseJsonl(text,name),fingerprint:fingerprint(text)}; }
+export async function writeText(handle,name,text) { const file=await handle.getFileHandle(name,{create:true}); const writable=await file.createWritable(); try { await writable.write(text); await writable.close(); } catch(e) { try { await writable.abort(); } catch {} throw e; } }
+export async function ensureFiles(handle, create) { const missing=[]; for(const n of FILES) if(await readText(handle,n,{required:false})===null) missing.push(n); if(missing.length&&create) for(const n of missing) await writeText(handle,n,''); return missing; }
+export async function saveHandle(handle) { return new Promise((resolve,reject)=>{const r=indexedDB.open('music-selector',2);r.onupgradeneeded=()=>{if(!r.result.objectStoreNames.contains('settings'))r.result.createObjectStore('settings');if(!r.result.objectStoreNames.contains('history'))r.result.createObjectStore('history',{keyPath:'id',autoIncrement:true});};r.onerror=()=>reject(r.error);r.onsuccess=()=>{const t=r.result.transaction('settings','readwrite');t.objectStore('settings').put(handle,'directory');t.oncomplete=resolve;t.onerror=()=>reject(t.error);};}); }
+export async function loadHandle() { return new Promise((resolve,reject)=>{const r=indexedDB.open('music-selector',2);r.onupgradeneeded=()=>{if(!r.result.objectStoreNames.contains('settings'))r.result.createObjectStore('settings');if(!r.result.objectStoreNames.contains('history'))r.result.createObjectStore('history',{keyPath:'id',autoIncrement:true});};r.onerror=()=>reject(r.error);r.onsuccess=()=>{const q=r.result.transaction('settings').objectStore('settings').get('directory');q.onsuccess=()=>resolve(q.result);q.onerror=()=>reject(q.error);};}); }
+export {serializeJsonl};
