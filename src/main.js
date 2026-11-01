@@ -6,17 +6,79 @@ import {backup} from './backup.js';
 import {render} from './ui.js';
 
 const root=document.querySelector('#app');
-const state={handle:null,data:Object.fromEntries(SOURCE_FILES.map(n=>[n,{records:[],text:'',fingerprint:''}])),labels:{},file:'possible.jsonl',index:0,session:0,busy:false,ready:false,status:'',error:'',embed:false};
-const show=()=>render(root,{...state,current:state.data[state.file]?.records[state.index]},actions);
+// state.data は FILES 全件をメモリに保持。移動はメモリ更新→即描画→バックグラウンド書き込みの順で行う。
+const state={handle:null,data:Object.fromEntries(FILES.map(n=>[n,{records:[],text:'',fingerprint:''}])),labels:{},file:'possible.jsonl',index:0,session:0,busy:false,syncing:false,ready:false,status:'',error:'',embed:false};
+const show=()=>render(root,{...state,sourceFiles:SOURCE_FILES,current:state.data[state.file]?.records[state.index]},actions);
 const message=(status='',error='')=>{state.status=status;state.error=error;show();};
 
-async function reload(){const next={};for(const name of SOURCE_FILES)next[name]=await readJsonl(state.handle,name);state.data=next;state.labels=await loadLabels(state.handle);state.index=Math.min(state.index,Math.max(0,next[state.file].records.length-1));}
+// ---- バックグラウンド書き込みキュー（ファイル単位で最新値に集約） ----
+// 同一ファイルへの連続書き込みは最新の内容だけを保持し、余分なI/Oを発生させない。
+const writeQueue=new Map();
+let writeDraining=false;
+function enqueueWrite(name,text){writeQueue.set(name,text);if(!state.syncing){state.syncing=true;show();}if(!writeDraining)drainWrites();}
+async function drainWrites(){
+  writeDraining=true;
+  while(writeQueue.size>0){
+    const [name,text]=writeQueue.entries().next().value;
+    writeQueue.delete(name);
+    try{await writeText(state.handle,name,text);}
+    catch(e){
+      writeQueue.clear();writeDraining=false;state.syncing=false;
+      message('',`ファイルの保存に失敗しました (${name}): ${e.message}\nデータが失われる可能性があります。バックアップを取得してください。`);
+      return;
+    }
+  }
+  writeDraining=false;state.syncing=false;show();
+}
+
+// ページを閉じる前にキューが残っていれば警告する
+window.addEventListener('beforeunload',e=>{if(writeQueue.size>0||writeDraining){e.preventDefault();}});
+
+async function reload(){const next={};for(const name of FILES)next[name]=await readJsonl(state.handle,name);state.data=next;state.labels=await loadLabels(state.handle);state.index=Math.min(state.index,Math.max(0,next[state.file].records.length-1));}
 async function connect(handle,ask=false){if(!await permission(handle,ask))throw new Error('読み書き権限がありません。');const missing=await ensureFiles(handle,false);if(missing.length){if(!confirm(`ファイルが不足しています: ${missing.join(', ')}\n空ファイルを作成しますか？`))throw new Error('必要な分類先ファイルがありません。');await ensureFiles(handle,true);}state.handle=handle;await reload();state.ready=true;await saveHandle(handle);message('読み込み完了。');}
 async function choose(){try{if(!supportsFileAccess())throw new Error('このブラウザはフォルダの直接更新に対応していません。');await connect(await window.showDirectoryPicker({mode:'readwrite'}),true);}catch(e){message('',e.name==='AbortError'?'フォルダ選択をキャンセルしました。':e.message);}}
 function sameRecord(a,b){return JSON.stringify(a)===JSON.stringify(b);}
 function removeOne(records,record){const i=records.findIndex(x=>sameRecord(x,record));if(i<0)throw new Error('現在表示中のレコードが移動元に見つかりません。再読み込みしてください。');return records.filter((_,index)=>index!==i);}
-async function move(destination){if(state.busy||!state.ready)return;const sourceName=state.file,record=state.data[sourceName].records[state.index];if(!record)return;if(destination===sourceName){state.index=Math.min(state.index+1,state.data[sourceName].records.length-1);message('このまま次の作品を表示しました。');return;}state.busy=true;message('保存中です…');let oldSource,oldDestination;try{const source=await readJsonl(state.handle,sourceName),dest=await readJsonl(state.handle,destination);if(source.fingerprint!==state.data[sourceName].fingerprint)throw new Error('移動元が外部で変更されました。再読み込みしてください。');const newSource=removeOne(source.records,record),newDestination=[...dest.records,record];oldSource=source.text;oldDestination=dest.text;await writeText(state.handle,destination,serializeJsonl(newDestination));const checkedDest=await readJsonl(state.handle,destination);if(!sameRecord(checkedDest.records.at(-1),record))throw new Error('移動先の保存確認に失敗しました。');try{await writeText(state.handle,sourceName,serializeJsonl(newSource));}catch(e){await writeText(state.handle,destination,oldDestination);throw e;}await addHistory({source:sourceName,destination,record});state.session++;state.index=Math.min(state.index,Math.max(0,newSource.length-1));await reload();message('保存しました。');}catch(e){if(oldSource!==undefined&&oldDestination!==undefined){try{await writeText(state.handle,sourceName,oldSource);await writeText(state.handle,destination,oldDestination);}catch{}}message('',`保存に失敗しました: ${e.message}`);}finally{state.busy=false;show();}}
-async function undo(){if(state.busy||!state.ready)return;state.busy=true;try{const h=await lastHistory();if(!h)throw new Error('取り消せる履歴はありません。');const source=await readJsonl(state.handle,h.source),dest=await readJsonl(state.handle,h.destination);const newDest=removeOne(dest.records,h.record),newSource=[...source.records,h.record];await writeText(state.handle,h.source,serializeJsonl(newSource));try{await writeText(state.handle,h.destination,serializeJsonl(newDest));}catch(e){await writeText(state.handle,h.source,source.text);throw e;}await removeHistory(h.id);state.file=h.source;state.index=newSource.length-1;await reload();message('直前の移動を取り消しました。');}catch(e){message('',`Undoできません: ${e.message}`);}finally{state.busy=false;show();}}
+
+// メモリを即時更新してから書き込みをキューイング。UIブロックなし。
+function applyMoveInMemory(srcName,dstName,record){
+  const newSrc=removeOne(state.data[srcName].records,record),newDst=[...state.data[dstName].records,record];
+  const srcText=serializeJsonl(newSrc),dstText=serializeJsonl(newDst);
+  state.data[srcName]={...state.data[srcName],records:newSrc,text:srcText};
+  state.data[dstName]={...state.data[dstName],records:newDst,text:dstText};
+  enqueueWrite(srcName,srcText);
+  enqueueWrite(dstName,dstText);
+}
+
+async function move(destination){
+  if(!state.ready)return;
+  const sourceName=state.file,record=state.data[sourceName].records[state.index];
+  if(!record)return;
+  if(destination===sourceName){state.index=Math.min(state.index+1,state.data[sourceName].records.length-1);show();return;}
+  try{
+    applyMoveInMemory(sourceName,destination,record);
+    state.index=Math.min(state.index,Math.max(0,state.data[sourceName].records.length-1));
+    state.session++;
+    show(); // ファイルI/O完了前に即描画
+    await addHistory({source:sourceName,destination,record});
+  }catch(e){message('',`移動に失敗しました: ${e.message}`);}
+}
+
+async function undo(){
+  if(state.busy||!state.ready)return;
+  state.busy=true;show();
+  try{
+    const h=await lastHistory();
+    if(!h)throw new Error('取り消せる履歴はありません。');
+    applyMoveInMemory(h.destination,h.source,h.record);
+    await removeHistory(h.id);
+    state.file=h.source;
+    state.index=state.data[h.source].records.length-1;
+    message('直前の移動を取り消しました。');
+  }catch(e){message('',`Undoできません: ${e.message}`);}
+  finally{state.busy=false;show();}
+}
+
 async function label(value){const record=state.data[state.file].records[state.index];try{state.labels=await setLabel(state.handle,record,value==='clear'?null:value==='true');message('チャンネル判定を保存しました。');}catch(e){message('',e.message);}}
 async function downloadBackup(){try{const blob=await backup(state.handle),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`music-selector-backup-${new Date().toISOString().slice(0,10)}.zip`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);message('バックアップを作成しました。');}catch(e){message('',e.message);}}
 const actions={choose,file:n=>{state.file=n;state.index=0;state.embed=false;message('ファイルを切り替えました。');},move,undo,label,backup:downloadBackup,embed:()=>{state.embed=!state.embed;show();}};
