@@ -73,15 +73,29 @@ async function undo(){
     applyMoveInMemory(h.destination,h.source,h.record);
     await removeHistory(h.id);
     state.file=h.source;
-    state.index=state.data[h.source].records.length-1;
+    state.index=Math.max(0,state.data[h.source].records.length-1);
     message('直前の移動を取り消しました。');
   }catch(e){message('',`Undoできません: ${e.message}`);}
   finally{state.busy=false;show();}
 }
 
+function goTo(fileName, index){
+  if(state.busy)return message('','処理中のため移動できません');
+  if(!state.ready)return message('','データフォルダを選択してください');
+  const list=state.data[fileName]?.records;
+  if(!list||list.length===0)return message('','このファイルにはレコードがありません');
+  if(!Number.isInteger(index)||index<0||index>=list.length){
+    return message('',`1〜${list.length} の範囲で指定してください`);
+  }
+  state.file=fileName;
+  state.index=index;
+  state.embed=false;
+  message(`${index+1} 件目に移動しました。`);
+}
+
 async function label(value){const record=state.data[state.file].records[state.index];try{state.labels=await setLabel(state.handle,record,value==='clear'?null:value==='true');message('チャンネル判定を保存しました。');}catch(e){message('',e.message);}}
 async function downloadBackup(){try{const blob=await backup(state.handle),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`music-selector-backup-${new Date().toISOString().slice(0,10)}.zip`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);message('バックアップを作成しました。');}catch(e){message('',e.message);}}
-const actions={choose,file:n=>{state.file=n;state.index=0;state.embed=false;message('ファイルを切り替えました。');},move,undo,label,backup:downloadBackup,embed:()=>{state.embed=!state.embed;show();}};
+const actions={choose,file:n=>{state.file=n;state.index=0;state.embed=false;message('ファイルを切り替えました。');},move,undo,label,backup:downloadBackup,embed:()=>{state.embed=!state.embed;show();},jump:n=>goTo(state.file,n-1),goToIndex:idx=>goTo(state.file,idx),stepIndex:delta=>goTo(state.file,state.index+delta)};
 if('serviceWorker'in navigator){if(location.hostname==='localhost'||location.hostname==='127.0.0.1')navigator.serviceWorker.getRegistrations().then(items=>Promise.all(items.map(item=>item.unregister())));else navigator.serviceWorker.register('/sw.js').catch(()=>{});}
 if(supportsFileAccess())loadHandle().then(async h=>{if(h&&await permission(h,false))await connect(h,false);else show();}).catch(()=>show());else message('', 'このブラウザでは直接ファイルを編集できません。');
 show();
