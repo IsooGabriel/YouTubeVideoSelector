@@ -37,12 +37,14 @@ graph TD
     subgraph Core Modules
         FS[src/file-system.js<br/>File System Access API / IndexedDB保存]
         STORE[src/jsonl-store.js<br/>JSONLパース・シリアライズ・検証]
+        SEARCH[src/search.js<br/>純粋検索ロジック・正規化・WeakMapキャッシュ]
         CH[src/channel-labels.js<br/>channel_labels.json 読み書き]
         HIST[src/history.js<br/>Undo履歴管理（IndexedDB: 最大20件）]
         BACKUP[src/backup.js<br/>ZIP生成（純粋JS/ストア方式）]
     end
 
     UI -->|ユーザー操作イベント| MAIN
+    UI -->|クエリ解析・検索実行| SEARCH
     MAIN -->|状態を渡して描画更新| UI
     MAIN --> FS
     MAIN --> STORE
@@ -58,8 +60,9 @@ graph TD
 
 | モジュール | 主な役割・責務 |
 | :--- | :--- |
-| `src/main.js` | アプリケーションのエントリーポイント。全体状態 (`state`) の保持、書き込みキュー (`writeQueue`) の制御、イベントハンドラの実装、`goTo` による安全な位置移動制御。 |
-| `src/ui.js` | 画面全体のHTMLレンダリング、ナビゲーションパネル（ジャンプUI）、入力中判定ヘルパー (`isTypingTarget`)、YouTube埋め込み制御、各種DOMイベント配線。 |
+| `src/main.js` | アプリケーションのエントリーポイント。全体状態 (`state`) の保持、書き込みキュー (`writeQueue`) の制御、イベントハンドラの実装、`goTo` による安全な位置移動制御、検索状態管理 (`setSearch`, `openResult`)。 |
+| `src/ui.js` | 画面全体のHTMLレンダリング、ナビゲーションパネル（ジャンプ・検索タブUI）、検索結果の部分更新、入力中判定ヘルパー (`isTypingTarget`)、YouTube埋め込み制御、各種DOMイベント配線。 |
+| `src/search.js` | 検索クエリ解析、NFKC・小文字・ひらがなカタカナ正規化、YouTube URL からの動画ID抽出、レコードマッチング、WeakMap による正規化キャッシュ（純粋関数）。 |
 | `src/file-system.js` | File System Access API を用いたファイル・フォルダハンドルの操作、読み書き、IndexedDBへのハンドル永続化。 |
 | `src/jsonl-store.js` | JSONLテキストとオブジェクト配列の相互変換、空行スキップ、破損行検知 (`JsonlError`)、ハッシュ指紋生成。 |
 | `src/channel-labels.js` | チャンネル単位の判定情報 (`channel_labels.json`) の読み込みおよび安全な更新。 |
@@ -207,7 +210,49 @@ sequenceDiagram
 
 ---
 
-## 7. Undo（取り消し）フロー
+## 7. 検索フロー
+
+動画ID・タイトル・チャンネル名をキーワード検索し、結果一覧から該当レコードへ直接ジャンプする機能です。
+ファイルI/O、IndexedDB履歴、書き込みキューには**一切触れず**、完全読み取り専用で動作します。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as ユーザー
+    participant UI as ui.js (検索パネル)
+    participant Search as search.js
+    participant Main as main.js (goTo)
+
+    User->>UI: キーワード入力 (デバウンス250ms / IME確定 / Enter)
+    UI->>Search: parseQuery(input)
+    alt URL貼り付け検出
+        Search-->>UI: { keywords: [], videoId }
+    else 通常テキスト
+        Search-->>UI: { keywords: [...], videoId: null }
+    end
+
+    UI->>Search: searchAll(state.data, parsed, { fields, scope, currentFile })
+    Note over Search: WeakMapキャッシュを参照し<br/>NFKC・英大小・ひらがなカタカナ正規化照合
+    Search-->>UI: 該当レコード一覧 (file, index, record)
+    UI->>UI: renderSearchResults() 【結果リストのみ部分更新】
+    UI-->>User: 総件数バッジ・結果一覧表示 (上限50件 + さらに表示)
+
+    User->>UI: 結果行をクリック
+    UI->>Main: actions.openResult(file, index)
+    Main->>Main: goTo(file, index)
+    Main->>UI: render(root, state) 【対象曲表示・検索パネルと結果は維持】
+```
+
+### 7.1 設計のポイント
+- **派生データとしての結果導出**: レコードの分類やUndoによって配列インデックスが変動するため、検索結果はキャッシュせず、現在の `state.data` から都度導出します。
+- **入力フォーカスと埋め込みの保護**: 全画面再描画（`render`）に巻き込まず、結果リスト領域（`#search-results`）のみを in-place に部分更新することで、YouTube iframe の再読み込みや入力中のフォーカス喪失を防ぎます。
+- **日本語入力（IME）とデバウンス**: `compositionstart`〜`compositionend` 中は検索を抑制し、通常入力は 250ms のデバウンスで実行します。Enter キー押下時は即時実行されます。
+- **XSS防止**: 外部データ（タイトル・チャンネル名）はすべて `textContent` / `document.createElement` を用いて描画し、`innerHTML` による直接展開を行いません。
+- **大文字小文字の厳密性**: YouTube の動画IDは case-sensitive なため大文字小文字を区別し、タイトルやチャンネル名は大小文字・全半角・ひらがなカタカナを吸収して照合します。
+
+---
+
+## 8. Undo（取り消し）フロー
 
 直前に行った分類操作を取り消し、元のファイルへレコードを戻します。
 
@@ -239,7 +284,7 @@ sequenceDiagram
 
 ---
 
-## 8. チャンネル判定フロー
+## 9. チャンネル判定フロー
 
 楽曲自体の分類とは独立して、チャンネル単位で「楽曲専用」「楽曲専用ではない」を `channel_labels.json` に記録します。
 
@@ -260,7 +305,7 @@ flowchart TD
 
 ---
 
-## 9. バックアップ（ZIP生成）フロー
+## 10. バックアップ（ZIP生成）フロー
 
 ローカルにある全4つのJSONLファイルと `channel_labels.json` をメモリ上で単一のZIPバイナリにパッケージ化し、ブラウザのダウンロード機能で保存します。
 
