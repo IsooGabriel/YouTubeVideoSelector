@@ -7,7 +7,7 @@ import {render} from './ui.js';
 
 const root=document.querySelector('#app');
 // state.data は FILES 全件をメモリに保持。移動はメモリ更新→即描画→バックグラウンド書き込みの順で行う。
-const state={handle:null,data:Object.fromEntries(FILES.map(n=>[n,{records:[],text:'',fingerprint:''}])),labels:{},file:'possible.jsonl',index:0,session:0,busy:false,syncing:false,ready:false,status:'',error:'',embed:false};
+const state={handle:null,data:Object.fromEntries(FILES.map(n=>[n,{records:[],text:'',fingerprint:''}])),labels:{},file:'possible.jsonl',index:0,session:0,busy:false,syncing:false,ready:false,status:'',error:'',embed:false,search:{query:'',fields:{videoId:false,title:true,channel:true},scope:'all'}};
 const show=()=>render(root,{...state,sourceFiles:SOURCE_FILES,current:state.data[state.file]?.records[state.index]},actions);
 const message=(status='',error='')=>{state.status=status;state.error=error;show();};
 
@@ -95,7 +95,8 @@ function goTo(fileName, index){
 
 async function label(value){const record=state.data[state.file].records[state.index];try{state.labels=await setLabel(state.handle,record,value==='clear'?null:value==='true');message('チャンネル判定を保存しました。');}catch(e){message('',e.message);}}
 async function downloadBackup(){try{const blob=await backup(state.handle),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`music-selector-backup-${new Date().toISOString().slice(0,10)}.zip`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);message('バックアップを作成しました。');}catch(e){message('',e.message);}}
-const actions={choose,file:n=>{state.file=n;state.index=0;state.embed=false;message('ファイルを切り替えました。');},move,undo,label,backup:downloadBackup,embed:()=>{state.embed=!state.embed;show();},jump:n=>goTo(state.file,n-1),goToIndex:idx=>goTo(state.file,idx),stepIndex:delta=>goTo(state.file,state.index+delta)};
+function setSearch(partial){Object.assign(state.search,partial);show();}
+const actions={choose,file:n=>{state.file=n;state.index=0;state.embed=false;message('ファイルを切り替えました。');},move,undo,label,backup:downloadBackup,embed:()=>{state.embed=!state.embed;show();},jump:n=>goTo(state.file,n-1),goToIndex:idx=>goTo(state.file,idx),stepIndex:delta=>goTo(state.file,state.index+delta),setSearch,openResult:(file,index)=>goTo(file,index)};
 if('serviceWorker'in navigator){if(location.hostname==='localhost'||location.hostname==='127.0.0.1')navigator.serviceWorker.getRegistrations().then(items=>Promise.all(items.map(item=>item.unregister())));else navigator.serviceWorker.register('/sw.js').catch(()=>{});}
 if(supportsFileAccess())loadHandle().then(async h=>{if(h&&await permission(h,false))await connect(h,false);else show();}).catch(()=>show());else message('', 'このブラウザでは直接ファイルを編集できません。');
 show();
