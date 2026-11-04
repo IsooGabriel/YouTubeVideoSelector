@@ -1,3 +1,5 @@
+import {getVideoId,getUrl,getTitle,getTitleRaw,getChannel} from './record-fields.js';
+
 /**
  * search.js — 検索機能の純粋関数群
  * DOM・state・ファイルシステムへの依存なし。副作用なし。
@@ -73,8 +75,8 @@ const normCache = new WeakMap();
 
 function getNormalized(record) {
   if (normCache.has(record)) return normCache.get(record);
-  const title = normalize((record.title_raw ?? record.title) || '');
-  const channel = normalize(record.channel || '');
+  const title = normalize(getTitleRaw(record) || getTitle(record));
+  const channel = normalize(getChannel(record));
   const entry = { title, channel };
   normCache.set(record, entry);
   return entry;
@@ -92,7 +94,7 @@ export function matchRecord(record, parsed, fields) {
 
   // URL貼り付けで動画IDが抽出できた場合: fieldsに関わらず動画ID完全一致で判定
   if (videoId !== null) {
-    const recId = record.video_id || extractVideoId(record.url || '');
+    const recId = getVideoId(record) || extractVideoId(getUrl(record));
     return recId === videoId;
   }
 
@@ -100,7 +102,7 @@ export function matchRecord(record, parsed, fields) {
 
   // 各キーワードについて「チェック済み項目のいずれかに含まれるか」(AND)
   const norm = getNormalized(record);
-  const recVideoId = record.video_id || extractVideoId(record.url || '') || null;
+  const recVideoId = getVideoId(record) || extractVideoId(getUrl(record)) || null;
 
   return keywords.every(kw => {
     // 動画IDフィールド: case-sensitive 部分一致
@@ -123,7 +125,7 @@ const FILE_ORDER = ['likely.jsonl', 'possible.jsonl', 'unknown.jsonl', 'excluded
  * @param {{ fields: {videoId:bool, title:bool, channel:bool}, scope: 'current'|'all', currentFile: string, fileOrder: string[] }} opts
  * @returns {{ file: string, index: number, record: object }[]}
  */
-export function searchAll(data, parsed, { fields, scope, currentFile, fileOrder }) {
+export function searchAll(data, parsed, { fields, scope, currentFile, fileOrder, orders }) {
   if (parsed.keywords.length === 0 && parsed.videoId === null) return [];
 
   const order = fileOrder || FILE_ORDER;
@@ -136,9 +138,11 @@ export function searchAll(data, parsed, { fields, scope, currentFile, fileOrder 
   for (const file of files) {
     const records = data[file]?.records;
     if (!records) continue;
-    for (let i = 0; i < records.length; i++) {
-      if (matchRecord(records[i], parsed, fields)) {
-        results.push({ file, index: i, record: records[i] });
+    const displayOrder=Array.isArray(orders?.[file])?orders[file]:records.map((_,index)=>index);
+    for (let viewIndex = 0; viewIndex < displayOrder.length; viewIndex++) {
+      const dataIndex=displayOrder[viewIndex],record=records[dataIndex];
+      if (record && matchRecord(record, parsed, fields)) {
+        results.push({ file, index: viewIndex, record });
       }
     }
   }

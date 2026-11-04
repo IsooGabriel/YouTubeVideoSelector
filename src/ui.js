@@ -137,7 +137,7 @@ function executeSearch(state, actions) {
     return;
   }
   const FILE_ORDER = ['likely.jsonl', 'possible.jsonl', 'unknown.jsonl', 'excluded.jsonl'];
-  const allResults = searchAll(state.data, parsed, { fields, scope, currentFile: state.file, fileOrder: FILE_ORDER });
+  const allResults = searchAll(state.data, parsed, { fields, scope, currentFile: state.file, fileOrder: FILE_ORDER, orders: state.view?.order });
   renderSearchResults(container, state, actions, allResults);
 }
 
@@ -152,13 +152,19 @@ export function render(root, state, actions) {
         label=r?.channel_url&&state.labels[r.channel_url],
         counts=Object.entries(state.data).map(([n,x])=>`${n}: ${x.records.length}`).join(' / '),
         sourceFiles=state.sourceFiles||Object.keys(state.data);
-  const currentRecords=state.data[state.file]?.records||[];
-  const total=currentRecords.length;
+  const total=state.viewLength??state.data[state.file]?.records?.length??0;
   const isTerminal=state.ready&&(!r||state.index>=total);
   const isNavDisabled=!state.ready||total===0||state.busy||isTerminal;
   const isJumpTab = prevTab !== 'search';
 
   root.innerHTML=`<main>${state.syncing?'<div class="syncing-bar" role="status" aria-live="polite">⟳ バックグラウンドで保存中…</div>':''}<header><h1>楽曲分類</h1><button id="choose">データフォルダを選択</button><select id="file" ${!state.ready?'disabled':''}>${sourceFiles.map(n=>`<option ${n===state.file?'selected':''}>${n}</option>`).join('')}</select><p class="status ${state.error?'error':''}">${esc(state.error||state.status||'フォルダを選択してください')}</p>${state.ready?`<small>${esc(state.file)} — ${total?state.index+1:0}/${total}　${esc(counts)}　分類済み: ${state.session}</small>`:''}</header><nav class="nav-panel" aria-label="ナビゲーション"><div class="nav-header"><div class="nav-tabs"><button class="nav-tab ${isJumpTab?'active':''}" data-tab="jump" type="button">ジャンプ</button><button class="nav-tab ${!isJumpTab?'active':''}" data-tab="search" type="button">検索</button></div><span class="jump-position"><strong>${total?state.index+1:0}</strong> / ${total} 件</span></div><div class="nav-tab-content ${isJumpTab?'':'hidden'}" data-content="jump"><div class="jump-controls"><div class="jump-input-group"><input type="number" id="jump-input" inputmode="numeric" min="1" max="${total}" placeholder="件数" ${isNavDisabled?'disabled':''}><button id="jump-go" type="button" ${isNavDisabled?'disabled':''}>移動</button></div><div class="jump-shortcuts"><button type="button" data-jump="first" ${isNavDisabled?'disabled':''}>先頭</button><button type="button" data-jump="-10" ${isNavDisabled?'disabled':''}>-10</button><button type="button" data-jump="+10" ${isNavDisabled?'disabled':''}>+10</button><button type="button" data-jump="last" ${isNavDisabled?'disabled':''}>末尾</button></div></div></div><div class="nav-tab-content ${!isJumpTab?'':'hidden'}" data-content="search"><div class="search-controls"><input type="search" id="search-input" placeholder="タイトル・チャンネル名・動画ID・URL" value="${esc(prevSearchQuery)}" autocomplete="off" ${!state.ready?'disabled':''}><div class="search-checkboxes"><label class="search-check"><input type="checkbox" id="ck-videoid" ${state.search.fields.videoId?'checked':''} ${!state.ready?'disabled':''}>動画ID</label><label class="search-check"><input type="checkbox" id="ck-title" ${state.search.fields.title?'checked':''} ${!state.ready?'disabled':''}>タイトル</label><label class="search-check"><input type="checkbox" id="ck-channel" ${state.search.fields.channel?'checked':''} ${!state.ready?'disabled':''}>チャンネル名</label></div><div class="search-scope"><label class="search-scope-label"><input type="radio" name="search-scope" value="all" ${state.search.scope==='all'?'checked':''} ${!state.ready?'disabled':''}>全ファイル</label><label class="search-scope-label"><input type="radio" name="search-scope" value="current" ${state.search.scope==='current'?'checked':''} ${!state.ready?'disabled':''}>現在のファイル</label></div></div><div id="search-results"></div></div></nav>${r?`<article><div class="eyebrow">${esc(state.file)} ${label?`・チャンネル判定: ${label.music_only?'楽曲専用':'楽曲専用ではない'}`:''}</div><h2>${link(r.url,r.title_raw||r.title||r.reason||'（タイトルなし）')}</h2><p class="channel">${link(r.channel_url,r.channel||'（チャンネル不明）')}</p>${id?(state.embed?`<div class="player"><iframe src="https://www.youtube-nocookie.com/embed/${esc(id)}" title="YouTube動画" loading="lazy" allow="encrypted-media; picture-in-picture" allowfullscreen></iframe><button id="embed">埋め込み表示を閉じる</button></div>`:'<button id="embed">動画を埋め込み表示</button>'):''}<dl>${r.play_count!=null?`<dt>再生回数</dt><dd>${esc(r.play_count)}</dd>`:''}${r.time?`<dt>日時</dt><dd>${esc(r.time)}</dd>`:''}${r.first_played?`<dt>初回再生</dt><dd>${esc(r.first_played)}</dd>`:''}${r.last_played?`<dt>最終再生</dt><dd>${esc(r.last_played)}</dd>`:''}</dl>${r.signals?.length?`<p><b>シグナル</b> ${r.signals.map(esc).join(' / ')}</p>`:''}<section class="channel-controls"><b>チャンネル判定</b><button data-label="true">楽曲専用</button><button data-label="false">楽曲専用ではない</button><button data-label="clear">判定を解除</button></section></article>`:state.ready?'<article class="empty"><h2>このファイルは完了です</h2></article>':''}<footer><button id="undo" ${state.busy?'disabled':''}>Undo</button><button id="backup" ${!state.ready||state.busy||state.syncing?'disabled':''}>バックアップZIP</button>${r?`<div class="actions">${[['likely.jsonl','楽曲の可能性が高い'],['possible.jsonl','楽曲の可能性あり'],['unknown.jsonl','判断保留'],['excluded.jsonl','対象外']].map(([n,t])=>`<button data-move="${n}">${t}<small>${n}${n===state.file?'（このまま次へ）':''}</small></button>`).join('')}</div>`:''}</footer></main>`;
+
+  // ソートはナビゲーションと独立したコンパクトな操作列として追加する。
+  const sortBar=document.createElement('div');
+  sortBar.className='sort-bar';
+  const sortOptions=(state.sort?.presets||[]).map(p=>`<option value="${esc(p.id)}" ${state.sort.currentId===p.id?'selected':''}>${esc(p.label)}</option>`).join('');
+  sortBar.innerHTML=`<label>並び順: <select id="sort-select" ${!state.ready||state.busy?'disabled':''}>${sortOptions}${state.sort?.currentId?'':'<option value="custom" selected>カスタム</option>'}</select></label><button id="sort-reverse" type="button" title="並び順を反転" ${!state.ready||state.busy?'disabled':''}>⇅</button>`;
+  root.querySelector('.nav-panel')?.before(sortBar);
 
   // ---- 基本イベント配線 ----
   root.querySelector('#choose')?.addEventListener('click',actions.choose);
@@ -166,6 +172,8 @@ export function render(root, state, actions) {
   root.querySelector('#undo')?.addEventListener('click',actions.undo);
   root.querySelector('#backup')?.addEventListener('click',actions.backup);
   root.querySelector('#embed')?.addEventListener('click',actions.embed);
+  root.querySelector('#sort-select')?.addEventListener('change',event=>{if(event.target.value!=='custom')actions.setSort(event.target.value);});
+  root.querySelector('#sort-reverse')?.addEventListener('click',actions.reverseSort);
   root.querySelectorAll('[data-move]').forEach(b=>b.addEventListener('click',()=>actions.move(b.dataset.move)));
   root.querySelectorAll('[data-label]').forEach(b=>b.addEventListener('click',()=>actions.label(b.dataset.label)));
 
