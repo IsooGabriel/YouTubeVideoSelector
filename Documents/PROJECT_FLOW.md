@@ -35,6 +35,10 @@ graph TD
     end
 
     subgraph Core Modules
+        RF[src/record-fields.js<br/>レコードアクセサ]
+        SORT[src/sort.js<br/>ソート仕様・比較]
+        VIEW[src/view-order.js<br/>表示順変換]
+        PREF[src/preferences.js<br/>ソート設定保存]
         FS[src/file-system.js<br/>File System Access API / IndexedDB保存]
         STORE[src/jsonl-store.js<br/>JSONLパース・シリアライズ・検証]
         SEARCH[src/search.js<br/>純粋検索ロジック・正規化・WeakMapキャッシュ]
@@ -44,8 +48,10 @@ graph TD
     end
 
     UI -->|ユーザー操作イベント| MAIN
-    UI -->|クエリ解析・検索実行| SEARCH
     MAIN -->|状態を渡して描画更新| UI
+    MAIN --> SORT
+    MAIN --> VIEW
+    MAIN --> PREF
     MAIN --> FS
     MAIN --> STORE
     MAIN --> CH
@@ -63,6 +69,9 @@ graph TD
 | `src/main.js` | アプリケーションのエントリーポイント。全体状態 (`state`) の保持、書き込みキュー (`writeQueue`) の制御、イベントハンドラの実装、`goTo` による安全な位置移動制御、検索状態管理 (`setSearch`, `openResult`)。 |
 | `src/ui.js` | 画面全体のHTMLレンダリング、ナビゲーションパネル（ジャンプ・検索タブUI）、検索結果の部分更新、入力中判定ヘルパー (`isTypingTarget`)、YouTube埋め込み制御、各種DOMイベント配線。 |
 | `src/search.js` | 検索クエリ解析、NFKC・小文字・ひらがなカタカナ正規化、YouTube URL からの動画ID抽出、レコードマッチング、WeakMap による正規化キャッシュ（純粋関数）。 |
+| `src/record-fields.js` | JSONLレコードのフィールドを安全に取り出すdomain層のアクセサ。 |
+| `src/sort.js` / `src/view-order.js` | ソートspecの検証・比較と、表示位置／データ位置を変換する順序配列の構築。DOMや永続化には依存しない。 |
+| `src/preferences.js` | `music-selector:sort-spec` をバージョン付き文字列として端末へ保存するインフラ層。 |
 | `src/file-system.js` | File System Access API を用いたファイル・フォルダハンドルの操作、読み書き、IndexedDBへのハンドル永続化。 |
 | `src/jsonl-store.js` | JSONLテキストとオブジェクト配列の相互変換、空行スキップ、破損行検知 (`JsonlError`)、ハッシュ指紋生成。 |
 | `src/channel-labels.js` | チャンネル単位の判定情報 (`channel_labels.json`) の読み込みおよび安全な更新。 |
@@ -203,7 +212,7 @@ sequenceDiagram
 ```
 
 ### 6.1 設計のポイント
-- **「N件目」の定義**: 空行を無視したメモリ上のレコード配列インデックスに 1 を加えた位置（1始まり）。
+- **「N件目」の定義**: 現在の表示順（`order`）における位置に 1 を加えた値（1始まり）。データ配列の位置は `order[表示位置]` で変換します。
 - **範囲外の非補正**: 誤入力で意図しない位置へ移動する事故を防ぐため、自動クランプは行わずエラーメッセージを出して移動しません。
 - **入力確定契機**: `input` イベントによる自動移動は行わず、「移動」ボタン押下または Enter キー確定時のみ実行します（YouTube iframe の多重読み込み防止）。
 - **拡張性**: 内部関数 `goTo(fileName, index)` はファイル名を受け取るシグネチャとなっており、将来の複数ファイル横断検索機能からも再利用可能です。
@@ -244,7 +253,17 @@ sequenceDiagram
 ```
 
 ### 7.1 設計のポイント
-- **派生データとしての結果導出**: レコードの分類やUndoによって配列インデックスが変動するため、検索結果はキャッシュせず、現在の `state.data` から都度導出します。
+- **派生データとしての結果導出**: レコードの分類やUndoによって配列インデックスが変動するため、検索結果はキャッシュせず、現在の `state.data` と表示順 `order` から都度導出します。結果の index も表示位置です。
+
+---
+
+## 7.2 ソート（表示順）フロー
+
+JSONLの物理的な行順を変えず、`state.view.order`（表示位置→データ位置）と `inverse`（データ位置→表示位置）を派生データとして管理します。
+
+`UI → actions.setSort → setSort → normalizeSpec → rebuildView(全ファイル) → 現在レコードの位置引き直し → preferences保存 → render`
+
+`record-fields.js`、`sort.js`、`view-order.js` はDOM・ブラウザ状態に依存しない純粋なdomain層です。保存設定は `preferences.js` が `localStorage` に文字列として保存し、main.jsへ注入します。移動とUndo後も対象ファイルの表示順を再構築します。
 - **入力フォーカスと埋め込みの保護**: 全画面再描画（`render`）に巻き込まず、結果リスト領域（`#search-results`）のみを in-place に部分更新することで、YouTube iframe の再読み込みや入力中のフォーカス喪失を防ぎます。
 - **日本語入力（IME）とデバウンス**: `compositionstart`〜`compositionend` 中は検索を抑制し、通常入力は 250ms のデバウンスで実行します。Enter キー押下時は即時実行されます。
 - **XSS防止**: 外部データ（タイトル・チャンネル名）はすべて `textContent` / `document.createElement` を用いて描画し、`innerHTML` による直接展開を行いません。
